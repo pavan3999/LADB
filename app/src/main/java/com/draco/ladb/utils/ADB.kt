@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.preference.PreferenceManager
@@ -37,8 +38,8 @@ class ADB(private val context: Context) {
     /**
      * Is the shell ready to handle commands?
      */
-    private val _started = MutableLiveData(false)
-    val started: LiveData<Boolean> = _started
+    private val _running = MutableLiveData(false)
+    val running: LiveData<Boolean> = _running
 
     private var tryingToPair = false
 
@@ -76,7 +77,7 @@ class ADB(private val context: Context) {
      * Start the ADB server
      */
     fun initServer(): Boolean {
-        if (_started.value == true || tryingToPair)
+        if (_running.value == true || tryingToPair)
             return true
 
         tryingToPair = true
@@ -104,27 +105,27 @@ class ADB(private val context: Context) {
             }
 
             /* Check again... */
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !isWirelessDebuggingEnabled()) {
-                debug("Wireless debugging is not enabled!")
-                debug("Settings -> Developer options -> Wireless debugging")
-                debug("Waiting for wireless debugging...")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (!isWirelessDebuggingEnabled()) {
+                    debug("Wireless debugging is not enabled!")
+                    debug("Settings -> Developer options -> Wireless debugging")
+                    debug("Waiting for wireless debugging...")
 
-                while (!isWirelessDebuggingEnabled()) {
-                    Thread.sleep(1_000)
+                    while (!isWirelessDebuggingEnabled()) {
+                        Thread.sleep(1_000)
+                    }
                 }
-            } else if (!isUSBDebuggingEnabled()) {
-                debug("USB debugging is not enabled!")
-                debug("Settings -> Developer options -> USB debugging")
-                debug("Waiting for USB debugging...")
+            } else {
+                if (!isUSBDebuggingEnabled()) {
+                    debug("USB debugging is not enabled!")
+                    debug("Settings -> Developer options -> USB debugging")
+                    debug("Waiting for USB debugging...")
 
-                while (!isUSBDebuggingEnabled()) {
-                    Thread.sleep(1_000)
+                    while (!isUSBDebuggingEnabled()) {
+                        Thread.sleep(1_000)
+                    }
                 }
             }
-
-            adb(false, listOf("start-server")).waitFor()
-            debug("Waiting for device to connect...")
-            debug("This may take a minute")
 
             val nowTime = System.currentTimeMillis()
             val maxTimeoutTime = nowTime + 10.seconds.inWholeMilliseconds
@@ -155,6 +156,9 @@ class ADB(private val context: Context) {
                 debug("Best ADB port discovered: $adbPort")
             else
                 debug("No ADB port discovered, fallback...")
+
+            debug("Starting ADB server...")
+            adb(false, listOf("start-server")).waitFor()
 
             val waitProcess = if (adbPort != null)
                 adb(false, listOf("connect", "localhost:$adbPort")).waitFor(1, TimeUnit.MINUTES)
@@ -197,7 +201,7 @@ class ADB(private val context: Context) {
         if (startupCommand.isNotEmpty())
             sendToShellProcess(startupCommand)
 
-        _started.postValue(true)
+        _running.postValue(true)
         tryingToPair = false
 
         return true
@@ -246,9 +250,12 @@ class ADB(private val context: Context) {
      */
     fun waitForDeathAndReset() {
         while (true) {
+            /* Do not falsely claim the shell is dead if we haven't even initialized it yet */
+            if (tryingToPair) continue
+
             shellProcess?.waitFor()
-            _started.postValue(false)
-            debug("Shell is dead, resetting")
+            _running.postValue(false)
+            debug("Shell is dead, resetting...")
             adb(false, listOf("kill-server")).waitFor()
 
             Thread.sleep(3_000)
@@ -330,6 +337,7 @@ class ADB(private val context: Context) {
      */
     fun debug(msg: String) {
         synchronized(outputBufferFile) {
+            Log.d("DEBUG", msg)
             if (outputBufferFile.exists())
                 outputBufferFile.appendText("* $msg" + System.lineSeparator())
         }
